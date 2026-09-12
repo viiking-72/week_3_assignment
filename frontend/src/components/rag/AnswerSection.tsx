@@ -2,16 +2,75 @@
 
 import { useEffect, useRef } from 'react'
 import { marked } from 'marked'
+import katex from 'katex'
 import hljs from 'highlight.js/lib/core'
 import javascript from 'highlight.js/lib/languages/javascript'
 import python from 'highlight.js/lib/languages/python'
 import bash from 'highlight.js/lib/languages/bash'
 import 'highlight.js/styles/github.min.css'
+import 'katex/dist/katex.min.css'
 
 // Register languages
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('python', python)
 hljs.registerLanguage('bash', bash)
+
+// The system prompt asks the model for LaTeX ($inline$ and $$block$$), so answers
+// arrive with real notation in them. Markdown alone leaves it as literal text.
+//
+// Math is pulled out BEFORE the markdown pass rather than typeset after it,
+// because subscripts collide with markdown: "L_1 ... L_2" on one line is read as
+// emphasis, and marked would eat the underscores and wrap the middle in <em>
+// before KaTeX ever saw it.
+type MathNode = { tex: string; display: boolean }
+
+const placeholder = (i: number) => `@@KATEX_BLOCK_${i}@@`
+
+function extractMath(source: string): { text: string; nodes: MathNode[] } {
+  const nodes: MathNode[] = []
+
+  const take = (tex: string, display: boolean) => {
+    nodes.push({ tex: tex.trim(), display })
+    return placeholder(nodes.length - 1)
+  }
+
+  // $$...$$ first, so the inline pass cannot split a block delimiter in half.
+  let text = source.replace(/\$\$([\s\S]+?)\$\$/g, (_match, tex: string) =>
+    take(tex, true),
+  )
+
+  // $...$ on a single line. Two dollar amounts in one sentence ("costs $7 per
+  // month and $12 with backups") otherwise look exactly like one math span, so
+  // claim it only when it carries a TeX control character, or is a short
+  // unbroken token like $N$ or $x_i$.
+  const looksLikeTex = (tex: string) =>
+    /[\\^_{}]/.test(tex) || (!/\s/.test(tex) && tex.length <= 12)
+
+  text = text.replace(/\$([^$\n]+?)\$/g, (match, tex: string) =>
+    looksLikeTex(tex) ? take(tex, false) : match,
+  )
+
+  return { text, nodes }
+}
+
+function restoreMath(html: string, nodes: MathNode[]): string {
+  return nodes.reduce((acc, node, i) => {
+    let rendered: string
+    try {
+      rendered = katex.renderToString(node.tex, {
+        displayMode: node.display,
+        throwOnError: false,
+        output: 'html',
+      })
+    } catch {
+      // Malformed LaTeX should degrade to the original text, not blank the answer.
+      rendered = node.display ? `$$${node.tex}$$` : `$${node.tex}$`
+    }
+    // Function form: KaTeX output can contain $ sequences that string replacement
+    // would otherwise treat as capture-group references.
+    return acc.replace(placeholder(i), () => rendered)
+  }, html)
+}
 
 interface AnswerSectionProps {
   answer: string
@@ -27,9 +86,11 @@ export function AnswerSection({ answer, processingTime, isVisible }: AnswerSecti
       // Render markdown (marked.parse can be sync or async depending on version)
       const renderMarkdown = async () => {
         try {
-          const html = await marked.parse(answer)
+          const { text, nodes } = extractMath(answer)
+          const parsed = (await marked.parse(text)) as string
+          const html = restoreMath(parsed, nodes)
           if (contentRef.current) {
-            contentRef.current.innerHTML = html as string
+            contentRef.current.innerHTML = html
             
             // Highlight code blocks after a brief delay to ensure DOM is updated
             setTimeout(() => {
