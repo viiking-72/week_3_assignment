@@ -55,3 +55,7 @@ backend/*.pyc
 
 
 *.npz
+
+# The prebuilt BM25 index IS needed by the deployed backend, so it is
+# committed even though other .npz files (raw embeddings) are not.
+!backend/bm25_index.npz

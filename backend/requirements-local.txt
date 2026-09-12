@@ -1,0 +1,9 @@
+# Local development requirements.
+# Adds fastembed so EMBEDDING_PROVIDER=local can run BAAI/bge-large-en-v1.5 on
+# this machine: free, no API key, ~42 ms per query. It pulls ONNX Runtime and
+# downloads ~1.2 GB of model weights on first use, and needs roughly 2.4 GB of
+# RAM, which is why it is kept out of the deployment requirements.
+
+-r requirements.txt
+
+fastembed>=0.4.0

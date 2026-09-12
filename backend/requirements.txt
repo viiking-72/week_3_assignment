@@ -1,3 +1,8 @@
+# Deployment requirements (Render free tier safe).
+# Nothing here downloads a model, so the image stays small and the process
+# starts inside 512 MB. For local development with offline embeddings, use
+# requirements-local.txt instead, which adds fastembed on top of these.
+
 fastapi>=0.104.0
 uvicorn>=0.24.0
 pydantic>=2.0.0
@@ -6,4 +11,5 @@ qdrant-client>=1.7.0
 rank-bm25>=0.2.2
 cohere>=4.0.0
 requests>=2.31.0
-openai>=1.0.0
+numpy>=1.24.0
+tqdm>=4.66.0

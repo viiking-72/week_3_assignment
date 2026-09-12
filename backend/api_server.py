@@ -33,7 +33,7 @@ try:
 except ImportError:
     pass
 
-from test_backend_integration import RAGGenerator, GenerationConfig, SYSTEM_PROMPT
+from rag_generate import RAGGenerator, GenerationConfig, SYSTEM_PROMPT
 
 
 # Global instances
@@ -53,12 +53,9 @@ async def lifespan(app: FastAPI):
     print("🚀 Initializing RAG pipeline...")
     print("="*60)
     
-    config = GenerationConfig(
-        llm_provider="openai",
-        retrieval_top_k=8,
-        refine_query=True,
-        use_reranker=True
-    )
+    # Provider, model and toggles all come from .env via GenerationConfig
+    # defaults, so switching providers needs no code change here.
+    config = GenerationConfig()
     
     rag_generator = RAGGenerator(config)
     print("\n✅ RAG pipeline ready!")
@@ -246,12 +243,12 @@ IMPORTANT: You have been provided with {len(results)} paper excerpts. Make sure 
         import requests
         
         headers = {
-            "Authorization": f"Bearer {rag_generator.openrouter_api_key}",
+            "Authorization": f"Bearer {rag_generator.llm_api_key}",
             "Content-Type": "application/json"
         }
         
         payload = {
-            "model": f"openai/{rag_generator.config.llm_model}",
+            "model": rag_generator.config.llm_model_id,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_message}
@@ -262,12 +259,16 @@ IMPORTANT: You have been provided with {len(results)} paper excerpts. Make sure 
         }
         
         response = requests.post(
-            f"{rag_generator.openrouter_base_url}/chat/completions",
+            f"{rag_generator.llm_base_url}/chat/completions",
             headers=headers,
             json=payload,
             stream=True
         )
-        
+
+        if response.status_code != 200:
+            yield emit("error", {"message": f"LLM request failed ({response.status_code}): {response.text[:300]}"})
+            return
+
         answer_chunks = []
         for line in response.iter_lines():
             if line:
@@ -291,7 +292,7 @@ IMPORTANT: You have been provided with {len(results)} paper excerpts. Make sure 
         processing_time = time.time() - start_time
         yield emit("complete", {
             "answer": answer,
-            "sources": list(sources_metadata.values()),
+            "sources": sources_metadata,
             "refined_query": refined if refined != query else None,
             "processing_time": processing_time
         })
@@ -415,7 +416,7 @@ async def websocket_query(websocket: WebSocket):
         await websocket.send_json({
             "type": "progress",
             "stage": "generating",
-            "message": "Generating answer with GPT-4..."
+            "message": f"Generating answer with {rag_generator.config.llm_model_id}..."
         })
         
         # Format context and build sources
@@ -440,12 +441,12 @@ IMPORTANT: You have been provided with {len(results)} paper excerpts. Make sure 
         import requests
         
         headers = {
-            "Authorization": f"Bearer {rag_generator.openrouter_api_key}",
+            "Authorization": f"Bearer {rag_generator.llm_api_key}",
             "Content-Type": "application/json"
         }
         
         payload = {
-            "model": f"openai/{rag_generator.config.llm_model}",
+            "model": rag_generator.config.llm_model_id,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_message}
@@ -456,12 +457,20 @@ IMPORTANT: You have been provided with {len(results)} paper excerpts. Make sure 
         }
         
         response = requests.post(
-            f"{rag_generator.openrouter_base_url}/chat/completions",
+            f"{rag_generator.llm_base_url}/chat/completions",
             headers=headers,
             json=payload,
             stream=True
         )
-        
+
+        if response.status_code != 200:
+            await websocket.send_json({
+                "type": "error",
+                "message": f"LLM request failed ({response.status_code}): {response.text[:300]}"
+            })
+            await websocket.close()
+            return
+
         answer_chunks = []
         for line in response.iter_lines():
             if line:
@@ -489,7 +498,7 @@ IMPORTANT: You have been provided with {len(results)} paper excerpts. Make sure 
         await websocket.send_json({
             "type": "complete",
             "answer": answer,
-            "sources": list(sources_metadata.values()),
+            "sources": sources_metadata,
             "refined_query": refined if refined != query else None,
             "processing_time": processing_time
         })
@@ -532,10 +541,15 @@ if __name__ == "__main__":
 ╚════════════════════════════════════════════════════════════════╝
 """)
     
+    # Auto-reload is a development convenience. It runs a file watcher and a
+    # second worker process, which roughly doubles memory and would push the
+    # backend over Render's 512 MB free tier, so it is off unless asked for.
+    reload = (os.getenv("RELOAD", "false").strip().lower() in ("1", "true", "yes", "on"))
+
     uvicorn.run(
         "api_server:app",
         host="0.0.0.0",
         port=port,
-        reload=True,
+        reload=reload,
         log_level="info"
     )

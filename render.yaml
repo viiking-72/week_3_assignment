@@ -1,0 +1,74 @@
+# Render deployment for the SIGGRAPH RAG backend (free tier).
+#
+# The free tier gives 512 MB of RAM, so two settings below are not optional:
+#
+#   LOW_MEMORY=true            loads the prebuilt bm25_index.npz instead of
+#                              parsing chunks.json, and reads chunk payloads
+#                              from Qdrant. Measured 157 MB instead of 631 MB.
+#   EMBEDDING_PROVIDER=hugging face
+#                              keeps the embedding model off this box. Running
+#                              it locally needs ~2.4 GB and will be killed here.
+#
+# Run `python build_bm25_index.py` once and commit bm25_index.npz before
+# deploying, otherwise startup falls back to parsing chunks.json and may OOM.
+#
+# This file must stay at the repository root. Render only reads a Blueprint
+# named render.yaml from the root, even when the service itself lives in a
+# subdirectory (that is what rootDir below is for).
+
+services:
+  - type: web
+    name: siggraph-rag-backend
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python api_server.py
+    healthCheckPath: /health
+    envVars:
+      # --- deployment-critical ---
+      - key: PYTHON_VERSION
+        value: "3.12.0"
+      - key: LOW_MEMORY
+        value: "true"
+      # Auto-reload would run a second worker process and blow the memory budget.
+      - key: RELOAD
+        value: "false"
+      - key: EMBEDDING_PROVIDER
+        value: huggingface
+      - key: LLM_PROVIDER
+        value: cohere
+
+      # --- models ---
+      - key: EMBEDDING_MODEL
+        value: BAAI/bge-large-en-v1.5
+      - key: LLM_MODEL
+        value: command-a-03-2025
+      - key: REFINEMENT_MODEL
+        value: command-r7b-12-2024
+      - key: COLLECTION_NAME
+        value: siggraph2025_papers
+
+      # --- retrieval behaviour ---
+      - key: RETRIEVAL_TOP_K
+        value: "8"
+      - key: REFINE_QUERY
+        value: "true"
+      - key: USE_RERANKER
+        value: "true"
+      - key: RERANKER_TYPE
+        value: cohere
+      - key: TEMPERATURE
+        value: "0.1"
+      - key: MAX_TOKENS
+        value: "2000"
+
+      # --- secrets: set these in the Render dashboard, never in this file ---
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: COHERE_API_KEY
+        sync: false
+      - key: HUGGINGFACE_API_KEY
+        sync: false
